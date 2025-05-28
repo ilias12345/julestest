@@ -29,11 +29,25 @@ public class SparkElasticsearchKafkaApp {
         String esHostname = esConfig.getEsNodes();
         int esPort = esConfig.getEsPort();
         String esScheme = esConfig.getEsScheme();
-        String esIndex = esConfig.getEsIndex();
-        String esQuery = esConfig.getEsQuery();
+        // es.index is now specifically "isocial_deposits" as per requirements
+        String esIndex = esConfig.getProperty("es.index", "isocial_deposits"); 
+        // es.query is now dynamically generated, so we don't fetch it from config here for this purpose.
 
         String kafkaBootstrapServers = kafkaConfig.getKafkaBootstrapServers();
         String kafkaTopic = kafkaConfig.getKafkaTopic();
+
+        // Calculate timestamp for 90 days ago
+        long currentTimeMillis = System.currentTimeMillis();
+        long ninetyDaysInMillis = 90L * 24 * 60 * 60 * 1000; // 90 days in milliseconds
+        long ninetyDaysAgoMillis = currentTimeMillis - ninetyDaysInMillis;
+
+        // Construct JSON query string
+        // Using String.format, ensuring proper JSON syntax.
+        // {"query":{"range":{"ISocialDepositEpoch":{"lt":<timestamp>}}}}
+        String esQueryString = String.format("{\"query\":{\"range\":{\"ISocialDepositEpoch\":{\"lt\":%d}}}}", ninetyDaysAgoMillis);
+
+        logger.info("Using Elasticsearch index: {}", esIndex);
+        logger.info("Dynamically generated Elasticsearch query: {}", esQueryString);
 
         SparkSession spark = null;
         KafkaDataProducer kafkaProducer = null;
@@ -64,12 +78,12 @@ public class SparkElasticsearchKafkaApp {
             logger.info("Initializing ElasticsearchReader with ES settings: host={}, port={}, scheme={}", esHostname, esPort, esScheme);
             ElasticsearchReader esReader = new ElasticsearchReader(spark); // Pass only SparkSession
 
-            // 3. Read data from Elasticsearch
-            logger.info("Reading data from Elasticsearch index: {} with query: {}", esIndex, esQuery);
-            Dataset<Row> data = esReader.readData(esIndex, esQuery); // Pass index and query
+            // 3. Read data from Elasticsearch using the dynamically generated query
+            logger.info("Reading data from Elasticsearch index: {} with dynamic query.", esIndex);
+            Dataset<Row> data = esReader.readData(esIndex, esQueryString); // Pass index and dynamic query
 
             if (data == null || data.isEmpty()) { // data.isEmpty() is a costly operation for large datasets, consider data.rdd().isEmpty() or other checks
-                logger.warn("No data read from Elasticsearch index: {}. Exiting application.", esIndex);
+                logger.warn("No data read from Elasticsearch index: {} using the dynamic query. Exiting application.", esIndex);
                 return; // Exit if no data
             }
             logger.info("Successfully read {} rows from Elasticsearch.", data.count());

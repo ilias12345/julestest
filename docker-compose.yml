@@ -14,6 +14,11 @@ services:
       - esdata:/usr/share/elasticsearch/data
     networks:
       - spark-es-kafka-net
+    healthcheck: # Add healthcheck for ES
+      test: ["CMD-SHELL", "curl -s --fail http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.0.1 # Use a compatible Zookeeper for Kafka
@@ -50,8 +55,8 @@ services:
       context: . # Assumes Dockerfile is in the project root
       dockerfile: Dockerfile
     container_name: spark-app
-    depends_on:
-      - elasticsearch
+    depends_on: # Updated depends_on
+      - elasticsearch-populator # Implicitly depends on ES and Kafka too
       - kafka
     environment:
       # Override Spark master if needed, though local[*] is usually fine for this setup
@@ -63,9 +68,9 @@ services:
       # These env vars would need to be read by AppConfig if we want to make paths dynamic
       # For now, AppConfig loads from classpath, which is fine as files are copied to app/config
       # and spark.driver.extraClassPath will include app/config
-      ES_NODES: elasticsearch # Override for Docker network
-      ES_PORT: 9200
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092 # Override for Docker network
+      ES_NODES: elasticsearch # Override for Docker network (AppConfig will pick this up)
+      ES_PORT: 9200 # Override for Docker network (AppConfig will pick this up)
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092 # Override for Docker network (AppConfig will pick this up)
     command: >
       /opt/bitnami/spark/bin/spark-submit
       --class com.example.SparkElasticsearchKafkaApp
@@ -82,6 +87,26 @@ services:
     # volumes:
     #  - ./target:/opt/bitnami/spark/app/target # Mounts the target dir from host
     #  - ./src/main/resources:/opt/bitnami/spark/app/config # Mounts config from host
+
+  elasticsearch-populator:
+    image: alpine/bash
+    container_name: elasticsearch-populator
+    depends_on:
+      elasticsearch:
+        condition: service_healthy # Wait for ES to be healthy
+    networks:
+      - spark-es-kafka-net
+    volumes:
+      - ./scripts:/opt/scripts # Mount the scripts directory
+    working_dir: /opt/scripts
+    environment:
+      ES_HOST: elasticsearch:9200 # Override ES_HOST for the script
+    # Install curl in alpine/bash, make script executable, then run it
+    command: >
+      sh -c "apk add --no-cache curl && \
+             chmod +x ./populate_elasticsearch.sh && \
+             ./populate_elasticsearch.sh"
+    # restart: on-failure # Optional: if you want to ensure it tries again on failure
 
 volumes:
   esdata:

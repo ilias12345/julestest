@@ -17,8 +17,8 @@ Configuration for Elasticsearch and Kafka is managed in property files located i
     *   `es.nodes`: Comma-separated list of Elasticsearch nodes (e.g., `localhost`).
     *   `es.port`: Elasticsearch HTTP port (e.g., `9200`).
     *   `es.scheme`: Connection scheme (`http` or `https`).
-    *   `es.index`: The Elasticsearch index to read from.
-    *   `es.query`: The query to select data (e.g., `?q=*:*` for all documents).
+    *   `es.index`: The Elasticsearch index to read from. Defaults to `isocial_deposits` (as set in the properties file).
+    *   `es.query`: This property is no longer used by the main application. The application dynamically generates an Elasticsearch query to select records from the `isocial_deposits` index where the `ISocialDepositEpoch` field (epoch milliseconds) is older than 90 days from the current execution time.
     *   `es.nodes.wan.only`: (Optional) Set to `true` if connecting to a WAN cluster. Defaults to `false`.
 
 2.  **Kafka (`kafka.properties`)**:
@@ -62,6 +62,15 @@ Configuration for Elasticsearch and Kafka is managed in property files located i
       target/spark-elasticsearch-kafka-1.0-SNAPSHOT.jar
     ```
     Alternatively, to build an uber JAR, you can add the `maven-shade-plugin` to your `pom.xml`.
+
+## Application Logic Overview
+
+The Spark application performs the following key functions:
+1.  Connects to an Elasticsearch instance.
+2.  Reads data specifically from the `isocial_deposits` index.
+3.  Filters the records to process only those where the `ISocialDepositEpoch` field (expected to be epoch milliseconds) indicates a date older than 90 days from the application's current execution time.
+4.  Converts the filtered Spark DataFrame rows into JSON strings.
+5.  Sends these JSON strings as messages to a specified Apache Kafka topic.
 
 ## Running with Docker Compose
 
@@ -125,28 +134,46 @@ The `docker-compose.yml` file in the project root is configured to:
     docker-compose logs -f spark-app
     ```
 
-### Initial Data for Elasticsearch (Important for Testing)
+### Initial Data for Elasticsearch
 
-For the Spark application to read and process data, the configured Elasticsearch index (e.g., `my-index` as per `elasticsearch.properties`) must exist and contain some documents.
+When you run `docker-compose up`, the `isocial_deposits` index in Elasticsearch is **automatically populated** with sample data by the `elasticsearch-populator` service. This service executes the `scripts/populate_elasticsearch.sh` script.
 
-After starting the services with `docker-compose up`, you can manually add sample data to Elasticsearch using cURL in a new terminal:
+The script:
+*   Deletes the `isocial_deposits` index if it already exists.
+*   Recreates the index with a specific mapping for fields like `ISocialDepositEpoch` (as a long).
+*   Populates the index with several sample documents, including records with `ISocialDepositEpoch` values set to be both older and more recent than 90 days from the current time.
 
+This ensures that when the Spark application runs, there is relevant data in Elasticsearch for it to process based on its filtering logic.
+
+**No Manual Population Needed for Basic Test**: You do not need to manually run `curl` commands to add initial data for the application to work as intended in the Docker Compose environment.
+
+**Customizing Test Data**:
+If you need to test with different data, you can modify the `scripts/populate_elasticsearch.sh` script. After making changes to the script, you might need to rebuild the `elasticsearch-populator` service image if it doesn't pick up changes automatically (though simple script changes in a mounted volume should be reflected):
 ```bash
-# Example: Index a sample document into 'my-index'
-curl -X POST "localhost:9200/my-index/_doc/1" -H 'Content-Type: application/json' -d'
+docker-compose build elasticsearch-populator # Optional, usually not needed for script changes
+docker-compose up --build # Or just docker-compose up if only script changed
+```
+
+You can still use `curl` commands (as shown below, but targeting `isocial_deposits`) to inspect the data or add more documents manually if needed:
+```bash
+# Verify the auto-populated data
+curl -X GET "localhost:9200/isocial_deposits/_search?pretty&q=*:*"
+
+# Example: Add another document manually
+curl -X POST "localhost:9200/isocial_deposits/_doc/manual_doc" -H 'Content-Type: application/json' -d'
 {
-  "user": "kimchy",
-  "post_date": "2009-11-15T14:12:12",
-  "message": "trying out Elasticsearch in Docker"
+  "ISocialDepositId": "manual001",
+  "ISocialDepositMessageName": "Manual Test Message",
+  "ISocialDepositOwner": "manual_user",
+  "ISocialDepositText": "This is a manually added document.",
+  "ISocialDepositEpoch": '$(($(date +%s%N)/1000000))',
+  "ISocialDepositMetadata": { "source": "manual_test", "tags": ["debug"] }
 }
 '
-
-# Verify the data
-curl -X GET "localhost:9200/my-index/_search?q=*:*"
 ```
 
 **Kafka Topic**:
-The Kafka topic specified in `kafka.properties` (e.g., `my-topic`) will typically be auto-created by the Kafka broker when the application first tries to publish to it, provided the broker's `auto.create.topics.enable` setting is true (which is common for Confluent Kafka images). If not, the application might log errors if it cannot publish to a non-existent topic.
+The Kafka topic specified in `kafka.properties` (e.g., `my-topic`) will typically be auto-created by the Kafka broker when the application first tries to publish to it. This is common if the broker's `auto.create.topics.enable` setting is true (default for many Kafka Docker images like Confluent's).
 
 ## Development
 
