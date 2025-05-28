@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.7 # Use a version compatible with the ES client and Spark connector
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m # Adjust memory as needed
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - spark-es-kafka-net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1 # Use a compatible Zookeeper for Kafka
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - spark-es-kafka-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1 # Use a compatible Kafka version
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092" # For client connections from host
+      - "29092:29092" # For connections within Docker network
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0 # Speeds up consumer group joining for local dev
+    networks:
+      - spark-es-kafka-net
+
+  spark-app:
+    build:
+      context: . # Assumes Dockerfile is in the project root
+      dockerfile: Dockerfile
+    container_name: spark-app
+    depends_on:
+      - elasticsearch
+      - kafka
+    environment:
+      # Override Spark master if needed, though local[*] is usually fine for this setup
+      # SPARK_MASTER_URL: spark://localhost:7077 # This would require a separate Spark master service
+      # Pass configuration file locations if they are not hardcoded or defaults are not used
+      # ELASTICSEARCH_PROPERTIES_PATH: /opt/bitnami/spark/app/config/elasticsearch.properties
+      # KAFKA_PROPERTIES_PATH: /opt/bitnami/spark/app/config/kafka.properties
+      # LOG4J_CONFIGURATION_PATH: /opt/bitnami/spark/app/config/log4j2.properties
+      # These env vars would need to be read by AppConfig if we want to make paths dynamic
+      # For now, AppConfig loads from classpath, which is fine as files are copied to app/config
+      # and spark.driver.extraClassPath will include app/config
+      ES_NODES: elasticsearch # Override for Docker network
+      ES_PORT: 9200
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092 # Override for Docker network
+    command: >
+      /opt/bitnami/spark/bin/spark-submit
+      --class com.example.SparkElasticsearchKafkaApp
+      --master local[*]
+      --deploy-mode client
+      --name ElasticsearchToKafkaApp
+      --conf spark.driver.extraClassPath=./config  # For log4j2.properties in app/config
+      --conf spark.executor.extraClassPath=./config # For log4j2.properties in app/config
+      --packages org.elasticsearch:elasticsearch-spark-30_2.12:7.17.7,org.apache.kafka:kafka-clients:3.5.1
+      ./${SPARK_APPLICATION_JAR_NAME}
+    networks:
+      - spark-es-kafka-net
+    # Optional: If you want to mount the target directory to avoid rebuilding the image for every code change (during dev)
+    # volumes:
+    #  - ./target:/opt/bitnami/spark/app/target # Mounts the target dir from host
+    #  - ./src/main/resources:/opt/bitnami/spark/app/config # Mounts config from host
+
+volumes:
+  esdata:
+    driver: local
+
+networks:
+  spark-es-kafka-net:
+    driver: bridge
