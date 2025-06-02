@@ -30,7 +30,7 @@ public class SparkElasticsearchKafkaApp {
         int esPort = esConfig.getEsPort();
         String esScheme = esConfig.getEsScheme();
         // es.index is now specifically "isocial_deposits" as per requirements
-        String esIndex = esConfig.getProperty("es.index", "isocial_deposits"); 
+        String esIndex = esConfig.getProperty("es.index", "isocial_deposits");
         // es.query is now dynamically generated, so we don't fetch it from config here for this purpose.
 
         String kafkaBootstrapServers = kafkaConfig.getKafkaBootstrapServers();
